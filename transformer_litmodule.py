@@ -87,7 +87,7 @@ class TransformerLitModule(LightningModule):
         # Compute the loss using a simple cross entropy 
         loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
         # Calling self.log will surface up scalars for you in TensorBoard
-        self.log("loss = ", loss.item(), prog_bar=True) 
+        self.log("loss = ", loss.item(), prog_bar=True, on_epoch=True, on_step=True) 
         #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
 
         self.train_losses.append(loss.item())         
@@ -335,7 +335,7 @@ class TransformerLitModule(LightningModule):
        
 
     def train_dataloader(self):                   
-        return DataLoader(self.train_ds, batch_size=self.config['batch_size'], shuffle=True, collate_fn = self.collate_fn)
+        return DataLoader(self.train_ds, batch_size=self.config['batch_size'], shuffle=True) #, collate_fn = self.collate_fn)
 
     def val_dataloader(self):
         return DataLoader(self.val_ds, batch_size=1, shuffle=True) 
