@@ -259,8 +259,12 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
         # Initialize the parameters
         for p in transformer.parameters():
             if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-                
+                #nn.init.xavier_uniform_(p)
+                nn.init.normal_(p, std=0.02)
+
+        n_param = sum(p.numel() for p in transformer.parameters())
+        print("Total Parameters:", n_param)
+
         return transformer
                                   
                                   
