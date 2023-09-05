@@ -74,30 +74,30 @@ class TransformerLitModule(LightningModule):
         encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len) 
         decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len,-seq_len) 
         
-        with torch.cuda.amp.autocast(enabled=True):
+        #with torch.cuda.amp.autocast(enabled=True):
             
-            # Run the tensors through the encoder, decoder and the projection layer 
-            encoder_output = self.model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model) 
-            decoder_output = self.model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) 
-            proj_output = self.model.project(decoder_output) # (B, seq_len, vocab_size) 
+        # Run the tensors through the encoder, decoder and the projection layer 
+        encoder_output = self.model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model) 
+        decoder_output = self.model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) 
+        proj_output = self.model.project(decoder_output) # (B, seq_len, vocab_size) 
+        
+        # Compare the output with the label 
+        label = batch['label'].to(device) # (B, seg_len)
             
-            # Compare the output with the label 
-            label = batch['label'].to(device) # (B, seg_len)
-                
-            # Compute the loss using a simple cross entropy 
-            loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
-            # Calling self.log will surface up scalars for you in TensorBoard
-            self.log("loss = ", loss.item(), prog_bar=True) 
-            #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
+        # Compute the loss using a simple cross entropy 
+        loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
+        # Calling self.log will surface up scalars for you in TensorBoard
+        self.log("loss = ", loss.item(), prog_bar=True) 
+        #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
 
-            self.train_losses.append(loss.item())         
-            
-            # Log the loss 
-            self.writer.add_scalar('train,loss', loss.item(), self.trainer.global_step) 
-            self.writer.flush() 
-            
-            # Backpropagate the loss 
-            loss.backward(retain_graph=True) 
+        self.train_losses.append(loss.item())         
+        
+        # Log the loss 
+        self.writer.add_scalar('train,loss', loss.item(), self.trainer.global_step) 
+        self.writer.flush() 
+        
+        # Backpropagate the loss 
+        loss.backward(retain_graph=True) 
 
         return loss
 
@@ -274,13 +274,13 @@ class TransformerLitModule(LightningModule):
         ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')        
         
         # Define a function to filter dataset as per assignment requirement
-        # def filter_examples(example):
-        #     source_text = example['translation'][config['lang_src']]
-        #     target_text = example['translation'][config['lang_tgt']]
-        #     return len(source_text) <= 150 and len(target_text) <= len(source_text) + 10
+        def filter_examples(example):
+            source_text = example['translation'][config['lang_src']]
+            target_text = example['translation'][config['lang_tgt']]
+            return len(source_text) <= 150 and len(target_text) <= len(source_text) + 10
 
-        # # Filter the dataset based on the custom filter function
-        # ds_raw = ds_raw.filter(filter_examples)
+        # Filter the dataset based on the custom filter function
+        ds_raw = ds_raw.filter(filter_examples)
         
         # Build tokenizers 
         self.tokenizer_src = self.get_or_build_tokenizer(config, ds_raw, config['lang_src'])
