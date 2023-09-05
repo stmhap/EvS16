@@ -274,13 +274,13 @@ class TransformerLitModule(LightningModule):
         ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')        
         
         # Define a function to filter dataset as per assignment requirement
-        def filter_examples(example):
-            source_text = example['translation'][config['lang_src']]
-            target_text = example['translation'][config['lang_tgt']]
-            return len(source_text) <= 150 and len(target_text) <= len(source_text) + 10
+        # def filter_examples(example):
+        #     source_text = example['translation'][config['lang_src']]
+        #     target_text = example['translation'][config['lang_tgt']]
+        #     return len(source_text) <= 150 and len(target_text) <= len(source_text) + 10
 
-        # Filter the dataset based on the custom filter function
-        ds_raw = ds_raw.filter(filter_examples)
+        # # Filter the dataset based on the custom filter function
+        # ds_raw = ds_raw.filter(filter_examples)
         
         # Build tokenizers 
         self.tokenizer_src = self.get_or_build_tokenizer(config, ds_raw, config['lang_src'])
