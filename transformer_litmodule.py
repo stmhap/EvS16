@@ -76,28 +76,28 @@ class TransformerLitModule(LightningModule):
         
         with torch.cuda.amp.autocast(enabled=True):
             
-        # Run the tensors through the encoder, decoder and the projection layer 
-        encoder_output = self.model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model) 
-        decoder_output = self.model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) 
-        proj_output = self.model.project(decoder_output) # (B, seq_len, vocab_size) 
+	        # Run the tensors through the encoder, decoder and the projection layer 
+	        encoder_output = self.model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model) 
+	        decoder_output = self.model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) 
+	        proj_output = self.model.project(decoder_output) # (B, seq_len, vocab_size) 
             
-        # Compare the output with the label 
-        label = batch['label'].to(device) # (B, seg_len)
+	        # Compare the output with the label 
+	        label = batch['label'].to(device) # (B, seg_len)
              
-        # Compute the loss using a simple cross entropy 
-        loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
-        # Calling self.log will surface up scalars for you in TensorBoard
-        self.log("loss = ", loss.item(), prog_bar=True) 
-        #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
+	        # Compute the loss using a simple cross entropy 
+	        loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
+	        # Calling self.log will surface up scalars for you in TensorBoard
+	        self.log("loss = ", loss.item(), prog_bar=True) 
+	        #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
         
-        self.train_losses.append(loss.item())         
+	        self.train_losses.append(loss.item())         
             
-        # Log the loss 
-        self.writer.add_scalar('train,loss', loss.item(), self.trainer.global_step) 
-        self.writer.flush() 
+	        # Log the loss 
+	        self.writer.add_scalar('train,loss', loss.item(), self.trainer.global_step) 
+	        self.writer.flush() 
             
-        # Backpropagate the loss 
-        loss.backward(retain_graph=True) 
+	        # Backpropagate the loss 
+			loss.backward(retain_graph=True) 
 
         return loss
 
