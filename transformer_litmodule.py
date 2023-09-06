@@ -3,7 +3,8 @@ from dataset import BilingualDataset, causal_mask
 from config import get_config, get_weights_file_path 
 
 import torchtext.datasets as datasets 
-import torch 
+import torch
+from torch import optim 
 import torch.nn as nn 
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim.lr_scheduler import LambdaLR 
@@ -37,7 +38,8 @@ class TransformerLitModule(LightningModule):
         self.console_width = 80
         
         # Tensorboard 
-        self.writer = SummaryWriter(config['experiment_name'])       
+        self.writer = SummaryWriter(config['experiment_name'])  
+        self.scaler = torch.cuda.amp.GradScaler()
         
         try: 
             # get the console window width 
@@ -47,10 +49,6 @@ class TransformerLitModule(LightningModule):
         except: 
             # If we can't get the console width, use 80 as default 
             self.console_width = 80 
-            
-        # Create the directory if it doesn't exist
-        save_dir = "weights"
-        os.makedirs(save_dir, exist_ok=True)
         
         #Validation variables
         self.val_count = 0 
@@ -71,39 +69,57 @@ class TransformerLitModule(LightningModule):
         encoder_input = batch['encoder_input'].to(device) # (B, seq_len)
         decoder_input = batch['decoder_input'].to(device) # (B, seq_len) 
         encoder_mask = batch['encoder_mask'].to(device) # (B, 1, 1, seq_len) 
-        decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len,-seq_len) 
-            
-        # Run the tensors through the encoder, decoder and the projection layer 
-        encoder_output = self.model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model) 
-        decoder_output = self.model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) 
-        proj_output = self.model.project(decoder_output) # (B, seq_len, vocab_size) 
-            
-        # Compare the output with the label 
-        label = batch['label'].to(device) # (B, seg_len)
-             
-        # Compute the loss using a simple cross entropy 
-        loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
-        # Calling self.log will surface up scalars for you in TensorBoard
-        self.log("loss = ", loss.item(), prog_bar=True) 
-        #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
+        decoder_mask = batch['decoder_mask'].to(device) # (B, 1, seq_len,-seq_len)     
         
-        self.train_losses.append(loss.item())         
+        
+        with torch.cuda.amp.autocast(enabled=True):
             
-        # Log the loss 
-        self.writer.add_scalar('train,loss', loss.item(), self.trainer.global_step) 
-        self.writer.flush() 
+            # Run the tensors through the encoder, decoder and the projection layer 
+            encoder_output = self.model.encode(encoder_input, encoder_mask) # (B, seq_len, d_model) 
+            decoder_output = self.model.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) 
+            proj_output = self.model.project(decoder_output) # (B, seq_len, vocab_size) 
+
+            # Compare the output with the label 
+            label = batch['label'].to(device) # (B, seg_len)
+
+            # Compute the loss using a simple cross entropy 
+            loss = self.loss_fn(proj_output.view(-1, self.tokenizer_tgt.get_vocab_size()), label.view(-1)) 
+            # Calling self.log will surface up scalars for you in TensorBoard
+            self.log("loss = ", loss.item(), prog_bar=True) 
+            #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"}) 
             
-        # Backpropagate the loss 
-        loss.backward(retain_graph=True) 
+            self.train_losses.append(loss.item())
+            
+            # Log the loss 
+            self.writer.add_scalar('train,loss', loss.item(), self.trainer.global_step) 
+            self.writer.flush() 
+            
+            self.optimizer.zero_grad() 
+            
+            # Backpropagate the loss 
+            self.scaler.scale(loss).backward(retain_graph=True)
+            
+            #Update weights
+            #self.scaler.step(self.optimizer)    
+            self.optimizer.step()
 
         return loss
-
+    
+    def training_step_end(self, batch, batch_idx):        
+        # Your train step end logic goes here
+        scale = self.scaler.get_scale()
+        self.scaler.update()
+        skip_lr_sched = (scale > self.sceler.get_scale())
+        if not skip_lr_sched:
+            self.scheduler.step()
+    
 
     def validation_step(self, batch, batch_idx):       
         max_len = self.config['seq_len'] 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
         
-        if self.val_count == self.val_num_examples:         
+        if self.val_count == self.val_num_examples:             
+            #print('-'*self.console_width)
             return 
         
         self.val_count += 1 
@@ -128,9 +144,10 @@ class TransformerLitModule(LightningModule):
             print('-'*self.console_width) 
             print(f"{f'SOURCE: ':>12}{source_text}") 
             print(f"{f'TARGET: ':>12}{target_text}")
-            print(f"{f'PREDICTED: ':>12}{model_out_text}")  
+            print(f"{f'PREDICTED: ':>12}{model_out_text}") 
             print('-'*self.console_width)
-            
+
+        
             
     def on_validation_epoch_end(self):
         writer = self.writer
@@ -173,13 +190,19 @@ class TransformerLitModule(LightningModule):
         # Save the model at the end of every epoch   
         mean_loss = sum(self.train_losses) / len(self.train_losses)
         print(f'Mean training loss at end of epoch {self.trainer.current_epoch} = {mean_loss}')
-        model_filename = get_weights_file_path(self.config, f"{self.trainer.current_epoch:02d}") 
-        torch.save({ 
-                    'epoch': self.trainer.current_epoch, 
-                    'model_state_dict': self.model.state_dict(), 
-                    'optimizer_state_dict': self.optimizer.state_dict(), 
-                    'global_step': self.trainer.global_step}
-                   , model_filename) 
+        
+        print(f'LR at end of epoch {self.trainer.current_epoch} = {self.scheduler.get_last_lr()}')
+        
+        # Save the model at the end of every 5th epoch - to save memory
+        curr_epoch = self.trainer.current_epoch + 1
+        if curr_epoch % 5 == 0:
+            model_filename = get_weights_file_path(self.config, f"{self.trainer.current_epoch:02d}") 
+            torch.save({ 
+                        'epoch': self.trainer.current_epoch, 
+                        'model_state_dict': self.model.state_dict(), 
+                        'optimizer_state_dict': self.optimizer.state_dict(), 
+                        'global_step': self.trainer.global_step}
+                       , model_filename) 
         self.train_losses = []
             
             
@@ -217,8 +240,25 @@ class TransformerLitModule(LightningModule):
 
         return decoder_input.squeeze(0)
     
-    def configure_optimizers(self):       
-        return {"optimizer": self.optimizer} # 
+    def configure_optimizers(self): 
+        suggested_lr = 3E-04
+        
+        steps_per_epoch = len(self.train_dataloader())
+        self.scheduler = optim.lr_scheduler.OneCycleLR(
+            self.optimizer, max_lr=suggested_lr,
+            steps_per_epoch=steps_per_epoch,
+            epochs=self.trainer.max_epochs, 
+            pct_start=10/self.trainer.max_epochs,
+            three_phase=True,
+            div_factor=3,
+            final_div_factor=10,
+            anneal_strategy='linear',
+            )
+        scheduler_dict = {
+            "scheduler": self.scheduler ,
+            "interval": "step",
+        }
+        return {"optimizer": self.optimizer, "lr_scheduler": scheduler_dict} # 
     
     
     ####################
@@ -251,7 +291,16 @@ class TransformerLitModule(LightningModule):
         config = self.config
         # download
         # It only has the train split, so we divide it overselves 
-        ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')        
+        ds_raw = load_dataset('opus_books', f"{config['lang_src']}-{config['lang_tgt']}", split='train')  
+        
+        # Define a function to filter dataset as per assignment requirement
+        def filter_examples(example):
+            source_text = example['translation'][config['lang_src']]
+            target_text = example['translation'][config['lang_tgt']]
+            return len(source_text) <= 150 and len(target_text) <= len(source_text) + 10
+
+        # Filter the dataset based on the custom filter function
+        ds_raw = ds_raw.filter(filter_examples)
         
         # Build tokenizers 
         self.tokenizer_src = self.get_or_build_tokenizer(config, ds_raw, config['lang_src'])
@@ -305,12 +354,46 @@ class TransformerLitModule(LightningModule):
         pass 
        
 
-    def train_dataloader(self):
-        return DataLoader(self.train_ds, batch_size=self.config['batch_size'], shuffle=True,  num_workers=min(os.cpu_count(), 4), persistent_workers=True, pin_memory=True)
+    def train_dataloader(self):                   
+        return DataLoader(self.train_ds, batch_size=self.config['batch_size'], shuffle=True, collate_fn = self.collate_fn)
 
     def val_dataloader(self):
-        return DataLoader(self.val_ds, batch_size=1, shuffle=True,  num_workers=min(os.cpu_count(), 4), persistent_workers=True, pin_memory=True) 
+        return DataLoader(self.val_ds, batch_size=1, shuffle=True) 
     
 
     def test_dataloader(self):
         pass
+    
+    def collate_fn(self, batch):
+            #print('----------------------------------------------')
+            encoder_input_max = max(x["encoder_str_length"] for x in batch)
+            decoder_input_max = max(x["decoder_str_length"] for x in batch)
+            #print('----------------------------------------------')
+            #print('encoder_input_max = ',encoder_input_max)
+            #print('decoder_input_max = ',decoder_input_max)
+            #print('----------------------------------------------')
+            encoder_inputs = []
+            decoder_inputs = []
+            encoder_mask = []
+            decoder_mask = []
+            label = []
+            src_text = []
+            tgt_text = []
+
+            for b in batch:
+                encoder_inputs.append(b["encoder_input"][:encoder_input_max])
+                decoder_inputs.append(b["decoder_input"][:decoder_input_max])
+                encoder_mask.append((b["encoder_mask"][0, 0, :encoder_input_max]).unsqueeze(0).unsqueeze(0).unsqueeze(0).int())
+                decoder_mask.append((b["decoder_mask"][0, :decoder_input_max, :decoder_input_max]).unsqueeze(0).unsqueeze(0).int())
+                label.append(b["label"][:decoder_input_max])
+                src_text.append(b["src_text"])
+                tgt_text.append(b["tgt_text"])
+            return {
+              "encoder_input":torch.vstack(encoder_inputs),
+              "decoder_input":torch.vstack(decoder_inputs),
+              "encoder_mask": torch.vstack(encoder_mask),
+              "decoder_mask": torch.vstack(decoder_mask),
+              "label":torch.vstack(label),
+              "src_text":src_text,
+              "tgt_text":tgt_text
+            }
