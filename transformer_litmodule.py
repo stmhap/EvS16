@@ -355,10 +355,13 @@ class TransformerLitModule(LightningModule):
        
 
     def train_dataloader(self):                   
-        return DataLoader(self.train_ds, batch_size=self.config['batch_size'], shuffle=True, collate_fn = self.collate_fn)
+        return DataLoader(self.train_ds, batch_size=self.config['batch_size'], 
+                          shuffle=True, collate_fn = self.collate_fn, 
+                          num_workers=min(os.cpu_count(), 4), persistent_workers=True, pin_memory=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_ds, batch_size=1, shuffle=True) 
+        return DataLoader(self.val_ds, batch_size=1, shuffle=True, 
+                          num_workers=min(os.cpu_count(), 4), persistent_workers=True, pin_memory=True) 
     
 
     def test_dataloader(self):
